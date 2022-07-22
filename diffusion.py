@@ -9,7 +9,8 @@ def q_sample(x_start, t, list_bar_alphas, device):
     alpha_bar_t = list_bar_alphas[t]
     
     mean = alpha_bar_t*x_start
-    cov = torch.eye(x_start.shape[0])*(1-alpha_bar_t)
+    cov = torch.eye(x_start.shape[0]).to(device)
+    cov = cov*(1-alpha_bar_t)
     return torch.distributions.MultivariateNormal(loc=mean,covariance_matrix=cov).sample().to(device)
 
 
@@ -57,7 +58,6 @@ def position_encoding_init(n_position, d_pos_vec):
     Init the sinusoid position encoding table 
     n_position in num_timesteps and d_pos_vec is the embedding dimension
     '''
-
     # keep dim 0 for padding token position encoding zero vector
     position_enc = np.array([
         [pos / np.power(10000, 2*i/d_pos_vec) for i in range(d_pos_vec)]
