@@ -1,0 +1,1120 @@
+\documentclass[11pt, a4paper]{article}
+
+% ── Packages ──────────────────────────────────────────────────
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath, amssymb, amsthm, mathtools}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage[most]{tcolorbox}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{array}
+
+% ── Colors ────────────────────────────────────────────────────
+\definecolor{ddpmblue}{RGB}{40, 80, 160}
+\definecolor{fmgreen}{RGB}{30, 120, 60}
+\definecolor{noteorange}{RGB}{200, 100, 0}
+\definecolor{codebg}{RGB}{245, 245, 245}
+\definecolor{codeframe}{RGB}{200, 200, 200}
+
+% ── Boxes ─────────────────────────────────────────────────────
+\newtcolorbox{keyinsight}{
+  colback=fmgreen!8, colframe=fmgreen!70!black,
+  fonttitle=\bfseries, title=Key Insight,
+  rounded corners, boxrule=0.8pt
+}
+\newtcolorbox{ddpmbox}{
+  colback=ddpmblue!6, colframe=ddpmblue!70!black,
+  fonttitle=\bfseries, title=DDPM,
+  rounded corners, boxrule=0.8pt
+}
+\newtcolorbox{fmbox}{
+  colback=fmgreen!6, colframe=fmgreen!70!black,
+  fonttitle=\bfseries, title=Flow Matching,
+  rounded corners, boxrule=0.8pt
+}
+\newtcolorbox{warningbox}{
+  colback=noteorange!8, colframe=noteorange!70!black,
+  fonttitle=\bfseries, title=Watch Out,
+  rounded corners, boxrule=0.8pt
+}
+
+% ── Code listings ─────────────────────────────────────────────
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{codeframe},
+  keywordstyle=\color{ddpmblue}\bfseries,
+  commentstyle=\color{gray},
+  stringstyle=\color{fmgreen},
+  breaklines=true,
+  columns=fullflexible,
+  xleftmargin=1em,
+  framexleftmargin=0.5em,
+  aboveskip=1em,
+  belowskip=1em,
+}
+
+% ── Math shortcuts ────────────────────────────────────────────
+\newcommand{\vtheta}{v_\theta}
+\newcommand{\mutheta}{\mu_\theta}
+\newcommand{\mutilde}{\tilde{\mu}}
+\newcommand{\betatilde}{\tilde{\beta}}
+\newcommand{\alphabar}{\bar{\alpha}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\Id}{\mathbf{I}}
+\newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
+\DeclareMathOperator{\Div}{div}
+\DeclareMathOperator{\MSE}{MSE}
+
+% ── Header/Footer ─────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small Flow Matching Reading Guide}
+\fancyhead[R]{\small ToyDiffusion}
+\fancyfoot[C]{\thepage}
+
+% ── Hyperlinks ────────────────────────────────────────────────
+\hypersetup{
+  colorlinks=true,
+  linkcolor=ddpmblue,
+  urlcolor=fmgreen!80!black,
+  citecolor=ddpmblue,
+  pdfstartview=FitH,
+}
+
+% ══════════════════════════════════════════════════════════════
+\title{
+  \textbf{Flow Matching: Complete Reading Guide} \\[0.3em]
+  \large For Upgrading ToyDiffusion from DDPM to Flow Matching
+}
+\author{Compiled for offline study}
+\date{February 2026}
+
+\begin{document}
+\maketitle
+\thispagestyle{fancy}
+
+\begin{abstract}
+This document is a self-contained reference for understanding how to upgrade
+ToyDiffusion---a toy DDPM implementation that generates 2D Homer Simpson
+scatter plots---from the classic \textbf{DDPM} framework (Ho et al., 2020) to
+the modern \textbf{Flow Matching} paradigm (Lipman et al., 2022; Liu et al.,
+2022). All key equations are typeset in full, derivations are expanded, and a
+side-by-side comparison makes the correspondence explicit. Stable Diffusion~3,
+Flux, and most modern production generative models have switched from DDPM to
+flow matching.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ══════════════════════════════════════════════════════════════
+\section{The Big Picture}
+\label{sec:big-picture}
+
+\subsection{What DDPM Does (Your Original Code)}
+
+Your ToyDiffusion project implements \textbf{DDPM} (Ho et al., 2020):
+
+\begin{enumerate}
+  \item Define a \textbf{Markov chain} that adds Gaussian noise over $T$
+        discrete steps.
+  \item Train a neural network to \textbf{reverse} the process step by step.
+  \item The model predicts either the noise $\epsilon$ or the posterior mean
+        $\mutilde_t$.
+\end{enumerate}
+
+The forward process gradually destroys the data signal:
+\[
+  q(x_t \mid x_0)
+  = \N\!\bigl(x_t;\; \sqrt{\alphabar_t}\, x_0,\;
+    (1-\alphabar_t)\,\Id\bigr)
+\]
+and the reverse process learns to undo it, one step at a time.
+
+\subsection{What Flow Matching Does}
+
+\textbf{Flow Matching} (2022) provides a simpler alternative:
+
+\begin{enumerate}
+  \item Define a \textbf{continuous path} from noise to data via linear
+        interpolation.
+  \item Train a neural network to predict the \textbf{velocity field}
+        $\vtheta(x,t)$ along that path.
+  \item Generate samples by integrating a simple ODE.
+\end{enumerate}
+
+\begin{keyinsight}
+Diffusion models are a \emph{special case} of flow matching with a particular
+(suboptimal) choice of interpolation path.  Using straight-line (Optimal
+Transport) paths instead gives straighter trajectories, which means fewer
+sampling steps and simpler math.
+\end{keyinsight}
+
+% ══════════════════════════════════════════════════════════════
+\section{Paper 1: Flow Matching for Generative Modeling}
+\label{sec:paper1}
+
+\begin{quote}
+\textbf{Authors:} Yaron Lipman, Ricky T.~Q.~Chen, Heli Ben-Hamu,
+Maximilian Nickel, Matt Le (Meta FAIR) \\
+\textbf{Published:} October 2022 (ICLR 2023) \\
+\textbf{arXiv:} \url{https://arxiv.org/abs/2210.02747}
+\end{quote}
+
+\subsection{Density Functions vs.\ Samples: A Key Distinction}
+\label{sec:density-vs-samples}
+
+Before diving into the math, we need to be precise about one thing.
+A \textbf{probability density function} $p(x)$ is a mathematical function
+$p: \R^d \to \R$ satisfying $\int p(x)\,dx = 1$.  It tells you ``how likely
+is $x$?''  A \textbf{sample} (or realization) is an actual point
+$x \in \R^d$ drawn from that distribution.
+
+In your ToyDiffusion project:
+
+\begin{itemize}
+  \item \textbf{The Gaussian prior} $p_0 = \N(0, \Id)$:
+    we have the exact formula
+    $p_0(x) = \frac{1}{(2\pi)^{d/2}}\exp\!\bigl(-\tfrac{1}{2}\|x\|^2\bigr)$,
+    \emph{and} we can generate samples via \texttt{torch.randn(N, 2)}.
+
+  \item \textbf{Homer Simpson} $p_{\mathrm{data}}$:
+    we do \textbf{not} have a formula.  We only have samples---the $(x,y)$
+    scatter plot points from your dataset.  But mathematically, some unknown
+    density function $p_{\mathrm{data}}(x)$ exists that is high where Homer's
+    features are and low everywhere else.
+
+  \item \textbf{Intermediate distributions} $p_t$ (for $0 < t < 1$):
+    we have \textbf{neither} the formula \textbf{nor} pre-computed samples.
+    We \emph{could} generate samples at time $t$ by flowing $p_0$ samples
+    forward, but we never write down $p_t(x)$ as a closed-form expression.
+\end{itemize}
+
+\begin{warningbox}
+The math in this document talks about density functions $p_t(x)$, but your
+code only ever works with \textbf{samples} (actual tensors of points).
+The entire point of Conditional Flow Matching (Section~\ref{sec:cfm}) is to
+set up a training loss that only requires samples from $p_0$ and
+$p_{\mathrm{data}}$---never $p_t$ itself.
+\end{warningbox}
+
+
+\subsection{Continuous Normalizing Flows}
+
+A \textbf{Continuous Normalizing Flow} (CNF) defines a time-dependent ODE
+whose solution transforms a simple prior $p_0 = \N(0,\Id)$ into the data
+distribution $p_1 \approx p_{\mathrm{data}}$:
+\begin{equation}
+  \label{eq:ode}
+  \frac{dx}{dt} = \vtheta(x, t), \qquad t \in [0, 1].
+\end{equation}
+
+\paragraph{What ``integrating this ODE'' means.}
+Recall that solving any ODE requires two things:
+\begin{enumerate}
+  \item The differential equation itself: $\frac{dx}{dt} = \vtheta(x, t)$
+  \item An \textbf{initial condition}: $x(0) = x_0$
+\end{enumerate}
+
+Given an initial sample $x_0 \sim \N(0, \Id)$, the solution at time $t{=}1$
+is:
+\begin{equation}
+  \label{eq:ode-solution}
+  x_1 = x_0 + \int_0^1 \vtheta\!\bigl(x(t),\, t\bigr)\, dt
+\end{equation}
+
+Note: $\int_0^1 \frac{dx}{dt}\,dt = x(1) - x(0) = x_1 - x_0$ gives you the
+\emph{change} in $x$, not $x_1$ itself.  You always need the initial condition
+$x_0$ to recover $x_1$.  In practice this integral is approximated by Euler
+steps (see Section~\ref{sec:code-changes}):
+\begin{equation}
+  x_{t+\Delta t} \approx x_t + \vtheta(x_t, t) \cdot \Delta t
+\end{equation}
+
+\paragraph{The flow map.}
+The ODE defines a \textbf{flow map} $\phi_t : \R^d \to \R^d$---a function
+that tells you where each point ends up at time~$t$:
+\[
+  \phi_0(x) = x \quad \text{(identity)}, \qquad
+  \frac{d}{dt}\phi_t(x) = \vtheta\!\bigl(\phi_t(x),\, t\bigr).
+\]
+If you start at $x_0$, then $\phi_t(x_0)$ is your position at time $t$.
+
+\paragraph{The pushforward (what $[\phi_t]_\# \, p_0$ means).}
+This notation looks scary but the idea is simple: take every point sampled
+from $p_0$, apply the map $\phi_t$ to each point, and look at the
+distribution of the results.  That resulting distribution is the
+\textbf{pushforward}:
+\begin{equation}
+  p_t = [\phi_t]_\# \, p_0.
+\end{equation}
+
+In code, this is exactly what your ToyDiffusion visualization already does:
+\begin{lstlisting}
+# Sample 1000 points from p_0
+x = torch.randn(1000, 2)          # these are distributed as p_0
+
+# Flow them forward to time t using the ODE
+for step in range(n_steps_to_t):
+    x = x + v_theta(x, t) * dt    # Euler integration
+
+# Now x is distributed as p_t = [phi_t]_# p_0
+plot(x)  # visualize the pushforward!
+\end{lstlisting}
+
+When you animated particles flowing from noise to Homer Simpson, you were
+computing the pushforward at each frame.
+
+
+\subsection{The Continuity Equation}
+\label{sec:continuity}
+
+The probability path $p_t$ and velocity field $u_t$ must satisfy the
+\textbf{continuity equation}.  Before stating it, let's unpack the notation.
+
+\paragraph{Notation: $u_t$ is the velocity field.}
+The papers use $u_t(x)$ as their notation for the velocity field.  This is
+the same object as $\vtheta(x,t)$ (what your code will call it)---just
+different notation.  Don't let the symbol change confuse you:
+$u_t(x) = \vtheta(x,t) = v(x,t)$ all refer to the same thing.
+
+\paragraph{What is divergence?}
+The divergence $\Div(\cdot)$ measures \emph{how much a vector field is
+spreading out or converging} at a point.  For a 2D velocity field
+$v = (v_x, v_y)$:
+\[
+  \Div(v) = \frac{\partial v_x}{\partial x} + \frac{\partial v_y}{\partial y}
+\]
+
+\begin{itemize}
+  \item $\Div > 0$: particles are spreading apart (like a source / explosion)
+  \item $\Div < 0$: particles are converging (like a sink / drain)
+  \item $\Div = 0$: the flow preserves volume (incompressible)
+\end{itemize}
+
+\paragraph{The equation.}
+Now we can state it:
+\begin{equation}
+  \label{eq:continuity}
+  \underbrace{\frac{\partial p_t}{\partial t}}_{\substack{
+    \text{how fast density} \\ \text{changes at } x}}
+  + \underbrace{\Div\bigl(p_t \cdot u_t\bigr)}_{\substack{
+    \text{how much probability} \\ \text{mass flows away from } x}}
+  = 0.
+\end{equation}
+
+The product $p_t \cdot u_t$ is the \textbf{probability flux}: density times
+velocity = ``flow of probability mass.''  The equation says these two terms
+must balance: if probability mass is flowing away from a region
+($\Div(p_t \cdot u_t) > 0$), the density there must decrease
+($\frac{\partial p_t}{\partial t} < 0$), and vice versa.
+
+\begin{keyinsight}
+This is just the law of conservation of probability mass.
+Probability can't be created or destroyed, only moved around.
+If particles leave a region, density decreases there.
+If particles enter, density increases.
+The continuity equation is the mathematical statement of this obvious
+physical fact.
+\end{keyinsight}
+
+\subsection{The Flow Matching Loss (Intractable)}
+
+The ideal objective would be to match the velocity field directly:
+\begin{equation}
+  \label{eq:lfm}
+  \mathcal{L}_{\mathrm{FM}}(\theta)
+  = \E_{t \sim U(0,1),\; x \sim p_t}
+    \norm{\vtheta(x, t) - u_t(x)}^2
+\end{equation}
+where $u_t(x)$ is the true velocity field that generates the probability path
+$p_t$.
+
+\begin{warningbox}
+This loss is \textbf{intractable}: we don't have access to $p_t(x)$ or
+$u_t(x)$ in closed form, because they involve integrals over all data points.
+Remember from Section~\ref{sec:density-vs-samples}: $p_t$ is a theoretical
+density we never compute!  We can't sample from it, and we don't know $u_t$.
+This is why we need the conditional trick below.
+\end{warningbox}
+
+\subsection{Conditional Flow Matching (The Key Contribution)}
+\label{sec:cfm}
+
+Instead of working with intractable marginals, we define \textbf{conditional}
+probability paths.  For each data point $x_1 \sim p_{\mathrm{data}}$, the
+conditional probability path is:
+\begin{equation}
+  \label{eq:cond-path}
+  p_t(x \mid x_1) = \N\!\bigl(x;\; \mu_t(x_1),\; \sigma_t(x_1)^2 \,\Id\bigr)
+\end{equation}
+with boundary conditions:
+\begin{align}
+  t = 0: &\quad \mu_0 = 0,\quad \sigma_0 = 1
+         \quad \text{(standard Gaussian prior)} \\
+  t = 1: &\quad \mu_1 = x_1,\quad \sigma_1 \approx 0
+         \quad \text{(concentrated at data point)}
+\end{align}
+
+For the \textbf{Optimal Transport (OT) linear path}:
+\begin{equation}
+  \label{eq:ot-path}
+  \mu_t(x_1) = t \cdot x_1, \qquad \sigma_t = 1 - t
+\end{equation}
+
+Sampling from this conditional path is equivalent to:
+\begin{equation}
+  \label{eq:interpolation}
+  \boxed{x_t = (1 - t)\, x_0 + t\, x_1}
+  \qquad \text{where } x_0 \sim \N(0, \Id)
+\end{equation}
+
+The conditional velocity field for this path is:
+\begin{equation}
+  \label{eq:cond-velocity-general}
+  u_t(x \mid x_1) = \frac{\sigma_t'(x_1)}{\sigma_t(x_1)}
+    \bigl(x - \mu_t(x_1)\bigr) + \mu_t'(x_1)
+\end{equation}
+
+\paragraph{Derivation.}
+Taking the time derivative of $x_t = (1-t)\,x_0 + t\,x_1$:
+\begin{equation}
+  \frac{dx_t}{dt} = -x_0 + x_1 = x_1 - x_0
+\end{equation}
+
+So the conditional velocity for the OT path simplifies to the remarkably simple
+expression:
+\begin{equation}
+  \label{eq:cond-velocity-ot}
+  \boxed{u_t(x \mid x_1) = x_1 - x_0}
+\end{equation}
+
+A constant!  The velocity doesn't depend on $x$ or $t$---it's simply the
+straight-line direction from noise to data.
+
+The \textbf{Conditional Flow Matching (CFM)} loss is then:
+\begin{equation}
+  \label{eq:lcfm}
+  \boxed{
+    \mathcal{L}_{\mathrm{CFM}}(\theta)
+    = \E_{t \sim U(0,1),\; x_0 \sim \N(0,\Id),\; x_1 \sim p_{\mathrm{data}}}
+      \norm{\vtheta(x_t, t) - (x_1 - x_0)}^2
+  }
+\end{equation}
+
+\begin{keyinsight}
+\textbf{Key Theorem (Lipman et al., 2022):}
+The gradients of $\mathcal{L}_{\mathrm{CFM}}$ and $\mathcal{L}_{\mathrm{FM}}$
+are identical:
+\[
+  \nabla_\theta \,\mathcal{L}_{\mathrm{CFM}}(\theta)
+  = \nabla_\theta \,\mathcal{L}_{\mathrm{FM}}(\theta).
+\]
+Training with the tractable conditional loss is \emph{equivalent} to training
+with the intractable marginal loss.  This is the central result that makes flow
+matching practical.
+\end{keyinsight}
+
+\paragraph{Proof sketch.}
+The marginal velocity field decomposes as:
+\[
+  u_t(x) = \frac{\int u_t(x \mid x_1)\, p_t(x \mid x_1)\, q(x_1)\, dx_1}
+                 {\int p_t(x \mid x_1)\, q(x_1)\, dx_1}
+         = \E_{q(x_1 \mid x)}\bigl[u_t(x \mid x_1)\bigr]
+\]
+Expanding the FM loss and applying the tower property of conditional
+expectations shows the gradient equivalence.  The full proof relies on
+exchanging the order of integration over $x$ and $x_1$.
+
+\subsection{Why Optimal Transport Paths?}
+
+The linear interpolation $x_t = (1-t)\,x_0 + t\,x_1$ is the
+\textbf{Wasserstein-2 optimal transport geodesic} between the conditional
+distributions $\N(0,\Id)$ and $\delta_{x_1}$.
+
+This has two important consequences:
+\begin{enumerate}
+  \item The marginal velocity field is smoother and closer to straight.
+  \item Fewer ODE solver steps are needed at inference (even 10--20 Euler steps
+        work well).
+\end{enumerate}
+
+Compare: DDPM-style paths are curved (they first destroy the signal heavily,
+then denoise), requiring ${\sim}1000$ steps or specialized samplers like DDIM.
+
+\subsection{Connection to Diffusion Models}
+
+Diffusion models correspond to flow matching with a \textbf{specific non-linear
+path}:
+\begin{equation}
+  \label{eq:vp-path}
+  x_t = \sqrt{\alphabar_t}\, x_1 + \sqrt{1 - \alphabar_t}\;\epsilon,
+  \qquad \epsilon \sim \N(0, \Id)
+\end{equation}
+
+This is the Variance Preserving SDE (VP-SDE) schedule.  In the flow matching
+framework, this corresponds to:
+\[
+  \mu_t(x_1) = \sqrt{\alphabar_t}\, x_1,
+  \qquad
+  \sigma_t = \sqrt{1 - \alphabar_t}
+\]
+
+The score function and velocity field are related by:
+\begin{equation}
+  \label{eq:score-velocity}
+  v(x, t) = f(x, t) - \tfrac{1}{2}\, g(t)^2 \,\nabla_x \log p_t(x)
+\end{equation}
+where $f$ and $g$ are the drift and diffusion coefficients of the corresponding
+SDE formulation $dx = f(x,t)\,dt + g(t)\,dW_t$.
+
+% ══════════════════════════════════════════════════════════════
+\section{Paper 2: Rectified Flow}
+\label{sec:paper2}
+
+\begin{quote}
+\textbf{Authors:} Xingchao Liu, Chengyue Gong, Qiang Liu (UT Austin) \\
+\textbf{Published:} September 2022 (ICLR 2023 Spotlight) \\
+\textbf{arXiv:} \url{https://arxiv.org/abs/2209.03003}
+\end{quote}
+
+\subsection{Core Formulation}
+
+Same ODE setup: learn $\vtheta$ such that
+\begin{equation}
+  \frac{dZ_t}{dt} = \vtheta(Z_t, t), \qquad t \in [0, 1].
+\end{equation}
+
+The training objective is identical to Conditional Flow Matching:
+\begin{equation}
+  \label{eq:rectified-loss}
+  \mathcal{L}
+  = \E_{t \sim U(0,1)}\;
+    \E_{X_0 \sim \N(0,\Id),\; X_1 \sim p_{\mathrm{data}}}
+    \norm{\vtheta(X_t, t) - (X_1 - X_0)}^2
+\end{equation}
+where $X_t = (1 - t)\, X_0 + t\, X_1$.
+
+\subsection{The Reflow Procedure (Unique Contribution)}
+
+The key idea: \textbf{iteratively straighten the flow trajectories}.
+
+\paragraph{Round 1 (Initial Training).}
+Sample independent pairs $(X_0, X_1)$ where $X_0 \sim \N(0,\Id)$ and
+$X_1 \sim p_{\mathrm{data}}$.  Train $v_1$ with the standard loss
+\eqref{eq:rectified-loss}.
+
+\paragraph{Round 2 (Reflow).}
+For many samples $X_0 \sim \N(0,\Id)$, solve the ODE of $v_1$ forward to
+obtain:
+\begin{equation}
+  Z_1 = X_0 + \int_0^1 v_1(Z_t, t)\, dt
+\end{equation}
+
+Now $(X_0, Z_1)$ are \textbf{coupled} pairs---they lie on the same learned
+trajectory.  Retrain a new model $v_2$ on these coupled pairs:
+\begin{equation}
+  \mathcal{L}_{\mathrm{reflow}}
+  = \E_{t}\, \norm{v_2\bigl((1{-}t)\,X_0 + t\,Z_1,\; t\bigr)
+    - (Z_1 - X_0)}^2
+\end{equation}
+
+\paragraph{Why it works.}
+In round~1, independent pairs produce crossing linear interpolation paths,
+forcing the velocity field to average at intersections (creating curvature).
+After reflow, the pairs are correlated---their interpolations cross much less,
+so the retrained flow is straighter.
+
+\subsection{Theoretical Guarantees}
+
+The straightness of the flow is measured by:
+\begin{equation}
+  \label{eq:straightness}
+  S(v) = \int_0^1 \E\!\left[
+    \norm{v(Z_t, t) - (Z_1 - Z_0)}^2
+  \right] dt
+\end{equation}
+
+\begin{itemize}
+  \item $S(v) = 0$ if and only if all trajectories are perfectly straight
+        lines.
+  \item Each round of reflow \textbf{monotonically decreases} $S(v)$, i.e.\
+        $S(v_{k+1}) \le S(v_k)$.
+  \item In the limit, $S(v) \to 0$ and all trajectories become straight.
+\end{itemize}
+
+\subsection{Few-Step and One-Step Generation}
+
+If all trajectories are perfectly straight, a single Euler step suffices:
+\begin{equation}
+  \label{eq:one-step}
+  Z_1 = Z_0 + v(Z_0, 0)
+  \qquad \text{(one-step generation!)}
+\end{equation}
+
+In practice:
+\begin{itemize}
+  \item After 1 reflow: good results with 2--4 Euler steps.
+  \item After 2 reflows: competitive 1-step generation.
+\end{itemize}
+
+% ══════════════════════════════════════════════════════════════
+\section{DDPM vs.\ Flow Matching: Side-by-Side}
+\label{sec:comparison}
+
+\subsection{Notation Comparison}
+
+\begin{warningbox}
+The time direction is \textbf{flipped}!  In DDPM, $t{=}0$ is clean data and
+$t{=}T$ is noise.  In flow matching, $t{=}0$ is noise and $t{=}1$ is data.
+\end{warningbox}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.3}
+\begin{tabular}{@{} l c c @{}}
+\toprule
+\textbf{Concept} & \textbf{DDPM (Your Code)} & \textbf{Flow Matching} \\
+\midrule
+Time domain & $t \in \{0, 1, \ldots, T\}$ discrete & $t \in [0, 1]$ continuous \\
+Data & $x_0$ (original, clean) & $x_1$ (target at $t{=}1$) \\
+Noise & $x_T$ (fully noised) & $x_0$ (noise at $t{=}0$) \\
+Direction & noise $\to$ data: $t\!:\, T \to 0$ & noise $\to$ data: $t\!:\, 0 \to 1$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Process Comparison}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.4}
+\begin{tabular}{@{} >{\raggedright\arraybackslash}p{3.2cm}
+                    >{\raggedright\arraybackslash}p{5.5cm}
+                    >{\raggedright\arraybackslash}p{5.5cm} @{}}
+\toprule
+\textbf{Aspect} & \textbf{DDPM (Your Original)} & \textbf{Flow Matching} \\
+\midrule
+Forward process &
+  Markov chain, $T$ discrete steps &
+  Linear interpolation, continuous \\
+Noise schedule &
+  Required ($\beta_t$, $\alpha_t$, $\alphabar_t$) &
+  \textbf{Not needed} \\
+Training target &
+  Predict $\epsilon$ or $\mutilde_t$ &
+  Predict velocity $v = x_1 - x_0$ \\
+Loss function &
+  $\norm{\mutilde_t - \mutheta}^2$ &
+  $\norm{v_{\mathrm{target}} - \vtheta}^2$ \\
+Sampling &
+  ${\sim}1000$ steps, complex posterior &
+  ${\sim}10$--$100$ Euler steps: $x \mathrel{{+}{=}} v \cdot dt$ \\
+Math complexity &
+  KL divergence, posterior distributions &
+  Simple ODE integration \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Equation Comparison}
+
+\subsubsection*{Interpolation (creating a noisy sample at time~$t$)}
+
+\begin{ddpmbox}
+\vspace{-0.5em}
+\[
+  x_t = \sqrt{\alphabar_t}\, x_0
+      + \sqrt{1 - \alphabar_t}\;\epsilon,
+  \qquad \epsilon \sim \N(0, \Id)
+\]
+\end{ddpmbox}
+
+\begin{fmbox}
+\vspace{-0.5em}
+\[
+  x_t = (1 - t)\, x_0 + t\, x_1,
+  \qquad x_0 \sim \N(0, \Id)
+\]
+\end{fmbox}
+
+\subsubsection*{Training target (what the network predicts)}
+
+\begin{ddpmbox}
+\vspace{-0.3em}
+\textbf{$\mu$-prediction:} a complex function of $x_0$, $x_t$, $\alpha_t$, $\beta_t$:
+\begin{align*}
+  \mutilde_t
+  &= \frac{\sqrt{\alphabar_{t-1}}\;\beta_t}{1 - \alphabar_t}\,x_0
+  + \frac{\sqrt{\alpha_t}\;(1 - \alphabar_{t-1})}{1 - \alphabar_t}\,x_t
+\end{align*}
+
+\textbf{$\epsilon$-prediction:} the noise that was added: target $= \epsilon$.
+\end{ddpmbox}
+
+\begin{fmbox}
+\vspace{-0.3em}
+\textbf{Velocity prediction:} the direction from noise to data:
+\[
+  v_{\mathrm{target}} = x_1 - x_0
+\]
+\end{fmbox}
+
+\subsubsection*{Sampling (generating new data)}
+
+\begin{ddpmbox}
+\vspace{-0.5em}
+Reverse Markov chain:
+\[
+  x_{t-1} = \mutheta(x_t, t) + \sigma_t \, z,
+  \qquad z \sim \N(0, \Id)
+\]
+\end{ddpmbox}
+
+\begin{fmbox}
+\vspace{-0.5em}
+Euler ODE step:
+\[
+  x_{t + \Delta t} = x_t + \vtheta(x_t, t) \cdot \Delta t
+\]
+\end{fmbox}
+
+% ══════════════════════════════════════════════════════════════
+\section{The Math You Need}
+\label{sec:math}
+
+\subsection{Continuous Normalizing Flows and the Continuity Equation}
+
+A CNF defines a velocity field $v: \R^d \times [0,1] \to \R^d$ whose ODE
+\eqref{eq:ode} has the unique solution flow $\phi_t$.  The induced probability
+path $p_t$ satisfies the continuity equation~\eqref{eq:continuity}.
+
+The \textbf{change of variables formula} for CNFs gives the exact log-likelihood:
+\begin{equation}
+  \log p_1(x_1) = \log p_0\bigl(\phi_1^{-1}(x_1)\bigr)
+  - \int_0^1 \Div\bigl(v(\phi_t(x), t)\bigr)\, dt
+\end{equation}
+
+This is important theoretically, though in practice flow matching sidesteps
+likelihood computation by using the regression loss \eqref{eq:lcfm} directly.
+
+\subsection{Gaussian Conditional Probability Paths}
+
+The general Gaussian conditional path is:
+\begin{equation}
+  p_t(x \mid x_1) = \N\!\bigl(x;\; \mu_t(x_1),\; \sigma_t(x_1)^2\,\Id\bigr)
+\end{equation}
+
+with boundary conditions:
+\begin{alignat}{3}
+  &t = 0: &\qquad \mu_0 &= 0, &\quad \sigma_0 &= 1
+    \quad \text{(standard Gaussian prior)} \\
+  &t = 1: &\qquad \mu_1 &= x_1, &\quad \sigma_1 &\approx 0
+    \quad \text{(concentrated at data)}
+\end{alignat}
+
+Two important choices:
+
+\renewcommand{\arraystretch}{1.5}
+\begin{center}
+\begin{tabular}{@{} l l l @{}}
+\toprule
+\textbf{Path} & $\mu_t(x_1)$ & $\sigma_t$ \\
+\midrule
+OT / Linear (recommended) & $t \cdot x_1$ & $1 - t$ \\
+VP / Diffusion (DDPM-like) & $\sqrt{\alphabar_t}\, x_1$
+  & $\sqrt{1 - \alphabar_t}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Sampling from either path follows:
+\begin{equation}
+  x_t = \mu_t(x_1) + \sigma_t \cdot \epsilon, \qquad \epsilon \sim \N(0, \Id)
+\end{equation}
+
+For the OT path: $x_t = t\, x_1 + (1-t)\,\epsilon = (1-t)\,x_0 + t\,x_1$
+(with $x_0 = \epsilon$).
+
+\subsection{Deriving the Conditional Velocity Field}
+
+\paragraph{General case.}  Given the Gaussian conditional path
+$p_t(x \mid x_1) = \N(x;\, \mu_t, \sigma_t^2\, \Id)$, we can write
+$x_t = \mu_t + \sigma_t\, \epsilon$ where $\epsilon \sim \N(0,\Id)$ is
+fixed.  Taking the time derivative:
+\begin{equation}
+  u_t(x \mid x_1) = \frac{dx_t}{dt}
+  = \mu_t' + \sigma_t'\, \epsilon
+  = \mu_t' + \frac{\sigma_t'}{\sigma_t}\,(x_t - \mu_t)
+\end{equation}
+
+where in the last step we used $\epsilon = (x_t - \mu_t)/\sigma_t$.
+
+\paragraph{OT/Linear path.}
+With $\mu_t = t\,x_1$ and $\sigma_t = 1-t$, we get
+$\mu_t' = x_1$ and $\sigma_t' = -1$, so:
+\begin{align}
+  u_t(x \mid x_1)
+  &= x_1 + \frac{-1}{1-t}\,(x_t - t\, x_1) \notag \\
+  &= x_1 - \frac{x_t - t\, x_1}{1-t} \notag \\
+  &= x_1 - \frac{(1-t)\,x_0 + t\,x_1 - t\,x_1}{1-t}
+    \quad \text{(substituting $x_t = (1-t)x_0 + t\,x_1$)} \notag \\
+  &= x_1 - x_0
+\end{align}
+
+\paragraph{VP/Diffusion path.}
+With $\mu_t = \sqrt{\alphabar_t}\, x_1$ and
+$\sigma_t = \sqrt{1-\alphabar_t}$:
+\begin{equation}
+  u_t^{\mathrm{VP}}(x \mid x_1)
+  = \frac{d\sqrt{\alphabar_t}}{dt}\, x_1
+  + \frac{d\sqrt{1-\alphabar_t}/dt}{\sqrt{1-\alphabar_t}}
+    \,(x - \sqrt{\alphabar_t}\, x_1)
+\end{equation}
+
+This is significantly more complex, depending on the specific $\alphabar_t$
+schedule.
+
+\subsection{Score--Velocity--Epsilon Conversion}
+
+Given a general schedule $\alpha_t$ (not to be confused with $\alphabar_t$
+in DDPM notation), where $x_t = \alpha_t\, x_1 + \sigma_t\, \epsilon$, the
+three prediction targets are related:
+
+\begin{align}
+  \label{eq:conversions}
+  \text{Velocity:} \quad
+    v &= \alpha_t'\, x_1 + \sigma_t'\, \epsilon \\[0.5em]
+  \text{Score:} \quad
+    \nabla_x \log p_t(x) &= -\frac{x - \alpha_t\, x_1}{\sigma_t^2}
+    = -\frac{\epsilon}{\sigma_t} \\[0.5em]
+  \text{Epsilon:} \quad
+    \epsilon &= \frac{x_t - \alpha_t\, x_1}{\sigma_t} \\[0.5em]
+  \text{Data:} \quad
+    x_1 &= \frac{x_t - \sigma_t\, \epsilon}{\alpha_t}
+\end{align}
+
+You can convert between any two given the schedule $(\alpha_t, \sigma_t)$.
+
+\paragraph{Velocity from epsilon (for OT path, $\alpha_t = t$, $\sigma_t = 1-t$):}
+\begin{equation}
+  v = \alpha_t'\, x_1 + \sigma_t'\, \epsilon
+    = 1 \cdot x_1 + (-1) \cdot \epsilon
+    = x_1 - \epsilon = x_1 - x_0
+\end{equation}
+
+\paragraph{Velocity from epsilon (for VP path):}
+\begin{equation}
+  v = \frac{d\sqrt{\alphabar_t}}{dt}\, x_1
+    - \frac{d\sqrt{1-\alphabar_t}}{dt}\;\epsilon
+\end{equation}
+
+% ══════════════════════════════════════════════════════════════
+\section{The 3 Changes to Your Code}
+\label{sec:code-changes}
+
+\subsection{Change 1: Replace \texttt{q\_sample} with Linear Interpolation}
+
+\begin{ddpmbox}
+\vspace{-0.5em}
+Old (\texttt{diffusion.py:q\_sample}):
+\begin{lstlisting}
+# x_t = sqrt(alpha_bar_t) * x_0 + sqrt(1 - alpha_bar_t) * eps
+alpha_bar_t = list_bar_alphas[t]
+mean = alpha_bar_t * x_start
+cov = torch.eye(x_start.shape[0]) * (1 - alpha_bar_t)
+x_t = MultivariateNormal(mean, cov).sample()
+\end{lstlisting}
+\end{ddpmbox}
+
+\begin{fmbox}
+\vspace{-0.5em}
+New (flow matching interpolation):
+\begin{lstlisting}
+def interpolate(x_data, t):
+    x_noise = torch.randn_like(x_data)       # x_0 ~ N(0, I)
+    x_t = (1 - t) * x_noise + t * x_data     # Eq. (6)
+    v_target = x_data - x_noise               # Eq. (9)
+    return x_t, v_target
+\end{lstlisting}
+\end{fmbox}
+
+No more $\alphabar_t$, $\alpha_t$, or $\beta_t$ schedules!
+
+\subsection{Change 2: Training Target $\to$ Velocity}
+
+\begin{ddpmbox}
+\vspace{-0.5em}
+Old (trains $\mutheta$ against $\mutilde_t$):
+\begin{lstlisting}
+mu_theta = model(x_t, t)
+mu_tilde, _ = posterior_q(x_start, x_t, t, ...)
+loss = MSE(mu_tilde, mu_theta)
+\end{lstlisting}
+\end{ddpmbox}
+
+\begin{fmbox}
+\vspace{-0.5em}
+New (trains $\vtheta$ against $v_{\mathrm{target}} = x_1 - x_0$):
+\begin{lstlisting}
+v_pred = model(x_t, t)
+loss = MSE(v_target, v_pred)
+\end{lstlisting}
+\end{fmbox}
+
+\subsection{Change 3: Sampling $\to$ Euler ODE Integration}
+
+\begin{ddpmbox}
+\vspace{-0.5em}
+Old (complex reverse Markov chain):
+\begin{lstlisting}
+# For t = T, T-1, ..., 1:
+mu_theta = model(x_t, t)
+x_{t-1} ~ N(mu_theta, beta_t * I)
+\end{lstlisting}
+\end{ddpmbox}
+
+\begin{fmbox}
+\vspace{-0.5em}
+New (simple Euler integration):
+\begin{lstlisting}
+x = torch.randn(n_samples, dim)   # start from noise
+dt = 1.0 / n_steps
+for i in range(n_steps):
+    t = i * dt
+    v = model(x, t)
+    x = x + v * dt                # Euler step
+# x is now a generated sample
+\end{lstlisting}
+\end{fmbox}
+
+\subsection{Complete Training Algorithm}
+
+\begin{tcolorbox}[colback=codebg, colframe=codeframe, title=\textbf{Algorithm 1: Flow Matching Training}]
+\begin{lstlisting}
+for each batch:
+    x_1 = sample_data()                # from dataset
+    x_0 = torch.randn_like(x_1)        # from N(0, I)
+    t = torch.rand(batch_size, 1)       # from U(0, 1)
+    x_t = (1 - t) * x_0 + t * x_1      # interpolation
+    v_target = x_1 - x_0               # target velocity
+    v_pred = model(x_t, t)             # network prediction
+    loss = MSE(v_pred, v_target)
+    loss.backward()
+    optimizer.step()
+\end{lstlisting}
+\end{tcolorbox}
+
+\subsection{Complete Sampling Algorithm}
+
+\begin{tcolorbox}[colback=codebg, colframe=codeframe, title=\textbf{Algorithm 2: Flow Matching Sampling (Euler)}]
+\begin{lstlisting}
+x = torch.randn(n_samples, dim)        # start from noise
+dt = 1.0 / n_steps
+for i in range(n_steps):
+    t = i * dt
+    v = model(x, t)
+    x = x + v * dt                     # Euler step
+# x is now a generated sample
+\end{lstlisting}
+\end{tcolorbox}
+
+% ══════════════════════════════════════════════════════════════
+\section{Advanced: Reflow for One-Step Generation}
+\label{sec:reflow}
+
+After training a basic flow matching model $v_1$, you can straighten the
+trajectories further via the reflow procedure.
+
+\subsection{Generating Coupled Pairs}
+
+\begin{tcolorbox}[colback=codebg, colframe=codeframe, title=\textbf{Step 1: Generate coupled pairs using $v_1$}]
+\begin{lstlisting}
+# Generate noise samples
+x_0 = torch.randn(N, dim)
+
+# Solve ODE forward from t=0 to t=1 using learned v_1
+x = x_0.clone()
+dt = 1.0 / n_steps
+for i in range(n_steps):
+    t = i * dt
+    x = x + v_1(x, t) * dt
+z_1 = x  # coupled output
+
+# Store (x_0, z_1) pairs -- these are now correlated
+\end{lstlisting}
+\end{tcolorbox}
+
+\subsection{Retraining on Coupled Pairs}
+
+\begin{tcolorbox}[colback=codebg, colframe=codeframe, title=\textbf{Step 2: Retrain $v_2$ on coupled pairs}]
+\begin{lstlisting}
+for each batch:
+    # Use COUPLED pairs instead of independent samples
+    x_0, z_1 = sample_coupled_pairs()
+    t = torch.rand(batch_size, 1)
+    x_t = (1 - t) * x_0 + t * z_1
+    v_target = z_1 - x_0
+    v_pred = model_v2(x_t, t)
+    loss = MSE(v_pred, v_target)
+    ...
+\end{lstlisting}
+\end{tcolorbox}
+
+\subsection{One-Step Generation After Reflow}
+
+After sufficient reflow rounds, the trajectories are approximately straight,
+enabling:
+\begin{equation}
+  x_{\mathrm{generated}} = x_0 + v_k(x_0, 0),
+  \qquad x_0 \sim \N(0, \Id)
+\end{equation}
+
+This replaces the entire multi-step ODE integration with a single function
+evaluation.
+
+% ══════════════════════════════════════════════════════════════
+\section{Reading Order and Resources}
+\label{sec:resources}
+
+\subsection{Recommended Reading Order}
+
+\begin{enumerate}
+  \item \textbf{Start here:}
+    \texttt{THEORY/GUIDE\_Flow\_Matching\_for\_ToyDiffusion.md} \\
+    Practical, code-focused, maps directly to ToyDiffusion.
+
+  \item \textbf{Intuition:}
+    Cambridge MLG Blog \\
+    \url{https://mlg.eng.cam.ac.uk/blog/2024/01/20/flow-matching.html} \\
+    Builds from CNFs $\to$ FM $\to$ CFM $\to$ OT paths.
+
+  \item \textbf{Interactive visuals:}
+    Diffusion Meets Flow Matching \\
+    \url{https://diffusionflow.github.io/} \\
+    Mathematical equivalence shown visually.
+
+  \item \textbf{Paper 1:} Flow Matching (Lipman et al., 2022) \\
+    \url{https://arxiv.org/abs/2210.02747} \\
+    Read Sections 1--3 for the math.
+
+  \item \textbf{Paper 2:} Rectified Flow (Liu et al., 2022) \\
+    \url{https://arxiv.org/abs/2209.03003} \\
+    Read Sections 1--3 for the reflow procedure.
+
+  \item \textbf{Implementation companion:} Flow Matching Guide and Code
+    (Lipman et al., 2024) \\
+    \url{https://arxiv.org/abs/2412.06264} \\
+    Comprehensive tutorial with PyTorch code.
+
+  \item \textbf{MIT Course:} Flow Matching and Diffusion Models (2026) \\
+    \url{https://diffusion.csail.mit.edu/docs/lecture-notes.pdf}
+\end{enumerate}
+
+\subsection{Code Repositories}
+
+\begin{center}
+\begin{tabular}{@{} l l l @{}}
+\toprule
+\textbf{Repo} & \textbf{What} & \textbf{Link} \\
+\midrule
+RectifiedFlow & Official PyTorch impl.
+  & \url{https://github.com/gnobitab/RectifiedFlow} \\
+ToyDiffusion & Your original DDPM project
+  & \url{https://github.com/ThiagoLira/ToyDiffusion} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ══════════════════════════════════════════════════════════════
+\newpage
+\section*{Flow Matching Cheat Sheet}
+\addcontentsline{toc}{section}{Flow Matching Cheat Sheet}
+
+\begin{tcolorbox}[
+  colback=fmgreen!5, colframe=fmgreen!80!black,
+  fonttitle=\bfseries\large,
+  title=Quick Reference Card,
+  rounded corners, boxrule=1pt
+]
+
+\textbf{Training:}
+\begin{align*}
+  x_1 &\sim p_{\mathrm{data}} && \text{sample data} \\
+  x_0 &\sim \N(0, \Id) && \text{sample noise} \\
+  t   &\sim U(0, 1) && \text{sample time} \\
+  x_t &= (1-t)\,x_0 + t\,x_1 && \text{interpolate} \\
+  v   &= x_1 - x_0 && \text{target velocity} \\
+  \mathcal{L} &= \norm{\vtheta(x_t, t) - v}^2 && \text{MSE loss}
+\end{align*}
+
+\textbf{Sampling} (Euler, $N$ steps):
+\begin{align*}
+  x &\sim \N(0, \Id), \qquad \Delta t = 1/N \\
+  \text{for } i &= 0, \ldots, N{-}1: \\
+  &\quad t = i \cdot \Delta t \\
+  &\quad x \leftarrow x + \vtheta(x, t) \cdot \Delta t \\
+  &\text{return } x
+\end{align*}
+
+\textbf{What the network predicts:}
+\[
+  \text{Input: } (x_t, t) \quad \longrightarrow \quad
+  \text{Output: } v \in \R^d \text{ (velocity, same dim as $x_t$)}
+\]
+
+\medskip
+\begin{center}
+\large\bfseries
+That's it.  No $\beta$s.  No $\alpha$s.  No posterior.  Just velocity.
+\end{center}
+
+\end{tcolorbox}
+
+% ══════════════════════════════════════════════════════════════
+\section*{References}
+\addcontentsline{toc}{section}{References}
+
+\begin{enumerate}[label={[\arabic*]}]
+  \item J.~Ho, A.~Jain, P.~Abbeel.
+    \textit{Denoising Diffusion Probabilistic Models}.
+    NeurIPS 2020.
+    \url{https://arxiv.org/abs/2006.11239}
+
+  \item Y.~Lipman, R.~T.~Q.~Chen, H.~Ben-Hamu, M.~Nickel, M.~Le.
+    \textit{Flow Matching for Generative Modeling}.
+    ICLR 2023.
+    \url{https://arxiv.org/abs/2210.02747}
+
+  \item X.~Liu, C.~Gong, Q.~Liu.
+    \textit{Flow Straight and Fast: Learning to Generate and Transfer
+    Data with Rectified Flow}.
+    ICLR 2023 (Spotlight).
+    \url{https://arxiv.org/abs/2209.03003}
+
+  \item Y.~Lipman, M.~Havasi, P.~Holderrieth, N.~Shaul, M.~Le,
+    B.~Karrer, R.~T.~Q.~Chen, D.~Lopez-Paz, H.~Ben-Hamu, I.~Gat.
+    \textit{Flow Matching Guide and Code}.
+    2024.
+    \url{https://arxiv.org/abs/2412.06264}
+
+  \item A.~Vaswani, N.~Shazeer, N.~Parmar, et al.
+    \textit{Attention Is All You Need}.
+    NeurIPS 2017.
+
+  \item J.~Song, C.~Meng, S.~Ermon.
+    \textit{Denoising Diffusion Implicit Models (DDIM)}.
+    ICLR 2021.
+    \url{https://arxiv.org/abs/2010.02502}
+\end{enumerate}
+
+\end{document}
