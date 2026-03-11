@@ -19,9 +19,9 @@ class EDMDiffusion:
     """
 
     def __init__(self, model=None, device="cpu", hidden_dim=256, time_emb_dim=64,
-                 sigma_data=0.5, P_mean=-1.2, P_std=1.2):
+                 sigma_data=None, P_mean=-1.2, P_std=1.2):
         self.device = device
-        self.sigma_data = sigma_data
+        self.sigma_data = sigma_data  # computed from data if None
         self.P_mean = P_mean
         self.P_std = P_std
         if model is None:
@@ -30,12 +30,7 @@ class EDMDiffusion:
             self.model = model.to(device)
 
     def _denoiser(self, x, sigma):
-        """Preconditioned denoiser D_theta(x; sigma).
-
-        Args:
-            x: (batch, 2) noisy input
-            sigma: (batch,) noise levels
-        """
+        """Preconditioned denoiser D_theta(x; sigma)."""
         c_skip, c_out, c_in, c_noise = edm_precond(sigma, self.sigma_data)
         c_skip = c_skip[:, None]
         c_out = c_out[:, None]
@@ -47,7 +42,12 @@ class EDMDiffusion:
     def train(self, data, epochs=100, batch_size=512, lr=1e-3):
         data = data.to(self.device)
         N = data.shape[0]
+
+        if self.sigma_data is None:
+            self.sigma_data = float(data.std())
+
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr * 0.01)
         losses = []
 
         for epoch in tqdm(range(epochs), desc="EDM"):
@@ -60,18 +60,14 @@ class EDMDiffusion:
                 x_0 = data[idx]
                 bs = x_0.shape[0]
 
-                # Sample sigma ~ LogNormal(P_mean, P_std)
                 ln_sigma = torch.randn(bs, device=self.device) * self.P_std + self.P_mean
                 sigma = torch.exp(ln_sigma)
 
-                # Noisy input: x_noisy = x_0 + sigma * eps
                 eps = torch.randn_like(x_0)
                 x_noisy = x_0 + sigma[:, None] * eps
 
-                # Preconditioned denoiser predicts x_0
                 D_pred = self._denoiser(x_noisy, sigma)
 
-                # Weighted loss
                 weight = edm_loss_weight(sigma, self.sigma_data)
                 loss = (weight[:, None] * (D_pred - x_0) ** 2).mean()
 
@@ -82,6 +78,7 @@ class EDMDiffusion:
                 epoch_loss += loss.item()
                 n_batches += 1
 
+            scheduler.step()
             losses.append(epoch_loss / n_batches)
 
         return losses
@@ -92,7 +89,6 @@ class EDMDiffusion:
         self.model.eval()
         sigmas = karras_sigma_schedule(n_steps).to(self.device)
 
-        # Initialize at highest noise level
         x = torch.randn(n_samples, 2, device=self.device) * sigmas[0]
         trajectory = [x.cpu().numpy()]
 
@@ -104,22 +100,15 @@ class EDMDiffusion:
                 break
 
             sigma_batch = torch.full((n_samples,), sigma_cur, device=self.device)
-
-            # Denoiser output
             D = self._denoiser(x, sigma_batch)
-
-            # d = (x - D) / sigma  (derivative of the ODE)
             d = (x - D) / sigma_cur
 
-            # Euler step
             x_next = x + d * (sigma_next - sigma_cur)
 
-            # Heun correction (2nd order) if not at the last step
             if sigma_next > 0:
                 sigma_next_batch = torch.full((n_samples,), sigma_next, device=self.device)
                 D_next = self._denoiser(x_next, sigma_next_batch)
                 d_next = (x_next - D_next) / sigma_next
-                # Average of two derivatives
                 x_next = x + 0.5 * (d + d_next) * (sigma_next - sigma_cur)
 
             x = x_next

@@ -13,8 +13,9 @@ class OTCFMDiffusion:
     Same as Rectified Flow but with minibatch OT coupling:
     before interpolation, solve linear_sum_assignment to reorder noise.
 
-    Train: t~U[0,1], OT-couple (x_0, x_1), x_t = (1-t)*x_0 + t*x_1, v = x_1 - x_0
-    Sample: Euler ODE dx = v*dt from t=0 -> 1, 50 steps
+    Convention: t=0 is noise (source), t=1 is data (target).
+    Train: t~U[0,1], OT-couple (z, x_1), x_t = (1-t)*z + t*x_1, v = x_1 - z
+    Sample: Euler ODE dx = v*dt from t=0 -> 1, 100 steps
     """
 
     def __init__(self, model=None, device="cpu", hidden_dim=256, time_emb_dim=64):
@@ -25,20 +26,10 @@ class OTCFMDiffusion:
             self.model = model.to(device)
 
     def train(self, data, epochs=100, batch_size=256, lr=1e-3):
-        """Train with OT-coupled pairs.
-
-        Args:
-            data: (N, 2) tensor of target data points
-            epochs: number of training epochs
-            batch_size: batch size (kept small since OT is O(n^3))
-            lr: learning rate
-
-        Returns:
-            list of per-epoch average losses
-        """
         data = data.to(self.device)
         N = data.shape[0]
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr * 0.01)
         criterion = nn.MSELoss()
         losses = []
 
@@ -49,27 +40,21 @@ class OTCFMDiffusion:
             perm = torch.randperm(N, device=self.device)
             for start in range(0, N, batch_size):
                 idx = perm[start : start + batch_size]
-                x_0 = data[idx]  # target data
-                bs = x_0.shape[0]
+                x_1 = data[idx]  # target data (t=1)
+                bs = x_1.shape[0]
 
-                # Sample noise
-                x_1 = torch.randn(bs, 2, device=self.device)
+                z = torch.randn(bs, 2, device=self.device)
 
-                # Compute OT coupling on CPU (scipy)
-                x_0_np = x_0.cpu().numpy()
+                # OT coupling: reorder noise to match data
                 x_1_np = x_1.cpu().numpy()
-                ot_perm = compute_ot_plan(x_0_np, x_1_np)
-                x_1 = x_1[torch.from_numpy(ot_perm).to(self.device)]
+                z_np = z.cpu().numpy()
+                ot_perm = compute_ot_plan(x_1_np, z_np)
+                z = z[torch.from_numpy(ot_perm).to(self.device)]
 
-                # Sample time
                 t = torch.rand(bs, device=self.device)
                 t_expand = t[:, None]
-
-                # Linear interpolation with OT-coupled pairs
-                x_t = (1 - t_expand) * x_0 + t_expand * x_1
-
-                # Target velocity
-                v_target = x_1 - x_0
+                x_t = (1 - t_expand) * z + t_expand * x_1
+                v_target = x_1 - z
 
                 optimizer.zero_grad()
                 v_pred = self.model(x_t, t)
@@ -80,23 +65,13 @@ class OTCFMDiffusion:
                 epoch_loss += loss.item()
                 n_batches += 1
 
+            scheduler.step()
             losses.append(epoch_loss / n_batches)
 
         return losses
 
     @torch.no_grad()
-    def generate(self, n_samples, n_steps=50):
-        """Generate samples via Euler ODE integration from t=0 to t=1.
-
-        Fewer steps needed thanks to straighter OT paths.
-
-        Args:
-            n_samples: number of points to generate
-            n_steps: number of Euler steps
-
-        Returns:
-            list of (n_samples, 2) numpy arrays (trajectory snapshots)
-        """
+    def generate(self, n_samples, n_steps=100):
         self.model.eval()
         dt = 1.0 / n_steps
         x = torch.randn(n_samples, 2, device=self.device)

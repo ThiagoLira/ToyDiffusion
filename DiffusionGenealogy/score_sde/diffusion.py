@@ -20,21 +20,17 @@ class ScoreSDEDiffusion:
         self.device = device
         self.beta_min = beta_min
         self.beta_max = beta_max
-        self.eps = 1e-3  # small time to avoid singularity at t=0
+        self.eps = 1e-3
         if model is None:
             self.model = TimeConditionedMLP(hidden_dim, time_emb_dim).to(device)
         else:
             self.model = model.to(device)
 
     def train(self, data, epochs=100, batch_size=512, lr=1e-3):
-        """Train score network via denoising score matching.
-
-        The model learns s_theta(x_t, t) ≈ -eps/sigma(t) = nabla_x log q(x_t|x_0).
-        Loss is sigma(t)^2 weighted MSE (equivalent to predicting noise).
-        """
         data = data.to(self.device)
         N = data.shape[0]
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr * 0.01)
         losses = []
 
         for epoch in tqdm(range(epochs), desc="Score-SDE"):
@@ -47,11 +43,9 @@ class ScoreSDEDiffusion:
                 x_0 = data[idx]
                 bs = x_0.shape[0]
 
-                # Sample t ~ U[eps, 1]
                 t = torch.rand(bs, device=self.device) * (1.0 - self.eps) + self.eps
                 eps = torch.randn_like(x_0)
 
-                # Marginal: x_t = alpha(t)*x_0 + sigma(t)*eps
                 alpha, sigma = marginal_prob_params(t, self.beta_min, self.beta_max)
                 x_t = alpha[:, None] * x_0 + sigma[:, None] * eps
 
@@ -61,8 +55,7 @@ class ScoreSDEDiffusion:
                 optimizer.zero_grad()
                 score_pred = self.model(x_t, t)
 
-                # Weighted loss: E[sigma^2 * ||score_pred - target||^2]
-                # This is equivalent to MSE on noise prediction
+                # Weighted loss: sigma^2 * ||score_pred - target||^2
                 weight = sigma[:, None] ** 2
                 loss = (weight * (score_pred - target_score) ** 2).mean()
                 loss.backward()
@@ -71,18 +64,16 @@ class ScoreSDEDiffusion:
                 epoch_loss += loss.item()
                 n_batches += 1
 
+            scheduler.step()
             losses.append(epoch_loss / n_batches)
 
         return losses
 
     @torch.no_grad()
     def generate(self, n_samples, n_steps=500):
-        """PF-ODE sampling: dx = [f(t)*x - 0.5*g(t)^2 * score] dt from t=1 to eps.
-
-        Uses Euler integration backwards in time.
-        """
+        """PF-ODE sampling: dx = [f(t)*x - 0.5*g(t)^2 * score] dt from t=1 to eps."""
         self.model.eval()
-        dt = -(1.0 - self.eps) / n_steps  # negative because integrating backwards
+        dt = -(1.0 - self.eps) / n_steps
         x = torch.randn(n_samples, 2, device=self.device)
         trajectory = [x.cpu().numpy()]
 
@@ -90,13 +81,9 @@ class ScoreSDEDiffusion:
         for step in range(n_steps):
             t_batch = torch.full((n_samples,), t_current, device=self.device)
 
-            # Get SDE coefficients
             f, g = sde_drift_diffusion(t_batch, self.beta_min, self.beta_max)
-
-            # Predict score
             score = self.model(x, t_batch)
 
-            # PF-ODE: dx/dt = f(t)*x - 0.5*g(t)^2 * score
             drift = f[:, None] * x - 0.5 * (g[:, None] ** 2) * score
             x = x + drift * dt
 

@@ -33,6 +33,7 @@ class DDPMDiffusion:
         data = data.to(self.device)
         N = data.shape[0]
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr * 0.01)
         criterion = nn.MSELoss()
         losses = []
 
@@ -46,15 +47,13 @@ class DDPMDiffusion:
                 x_0 = data[idx]
                 bs = x_0.shape[0]
 
-                # Sample random timesteps t in {0, ..., T-1}
                 t_int = torch.randint(0, self.T, (bs,), device=self.device)
                 eps = torch.randn_like(x_0)
 
-                # Forward process: x_t = sqrt(abar_t)*x_0 + sqrt(1-abar_t)*eps
                 abar = self.alpha_bars[t_int][:, None]
                 x_t = torch.sqrt(abar) * x_0 + torch.sqrt(1.0 - abar) * eps
 
-                # Normalize t to [0, 1] for continuous time embedding
+                # Normalize t to [0, 1] for time embedding
                 t_norm = t_int.float() / self.T
 
                 optimizer.zero_grad()
@@ -66,16 +65,14 @@ class DDPMDiffusion:
                 epoch_loss += loss.item()
                 n_batches += 1
 
+            scheduler.step()
             losses.append(epoch_loss / n_batches)
 
         return losses
 
     @torch.no_grad()
     def generate(self, n_samples, n_steps=None):
-        """Reverse diffusion sampling from t=T-1 down to 0.
-
-        n_steps is ignored (always uses T steps for DDPM).
-        """
+        """Reverse diffusion sampling from t=T-1 down to 0."""
         self.model.eval()
         x = torch.randn(n_samples, 2, device=self.device)
         trajectory = [x.cpu().numpy()]
@@ -90,7 +87,6 @@ class DDPMDiffusion:
             abar_t = self.alpha_bars[t]
             beta_t = self.betas[t]
 
-            # Predicted mean: mu = (1/sqrt(alpha_t)) * (x_t - beta_t/sqrt(1-abar_t) * eps_pred)
             mu = (1.0 / torch.sqrt(alpha_t)) * (
                 x - (beta_t / torch.sqrt(1.0 - abar_t)) * eps_pred
             )

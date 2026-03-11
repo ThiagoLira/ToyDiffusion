@@ -9,7 +9,8 @@ from ..shared.model import TimeConditionedMLP
 class RectifiedFlowDiffusion:
     """Rectified Flow: linear interpolation + velocity prediction + Euler ODE.
 
-    Train: t~U[0,1], x_t = (1-t)*x_0 + t*eps, v_target = eps - x_0
+    Convention (Liu et al.): t=0 is noise (source), t=1 is data (target).
+    Train: t~U[0,1], x_t = (1-t)*z + t*x_1, v_target = x_1 - z
     Sample: Euler ODE dx = v*dt from t=0 -> 1, 100 steps
     """
 
@@ -21,20 +22,10 @@ class RectifiedFlowDiffusion:
             self.model = model.to(device)
 
     def train(self, data, epochs=100, batch_size=512, lr=1e-3):
-        """Train the velocity field.
-
-        Args:
-            data: (N, 2) tensor of target data points
-            epochs: number of training epochs
-            batch_size: training batch size
-            lr: learning rate
-
-        Returns:
-            list of per-epoch average losses
-        """
         data = data.to(self.device)
         N = data.shape[0]
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr * 0.01)
         criterion = nn.MSELoss()
         losses = []
 
@@ -45,19 +36,14 @@ class RectifiedFlowDiffusion:
             perm = torch.randperm(N, device=self.device)
             for start in range(0, N, batch_size):
                 idx = perm[start : start + batch_size]
-                x_0 = data[idx]  # target data
-                bs = x_0.shape[0]
+                x_1 = data[idx]  # target data (t=1)
+                bs = x_1.shape[0]
 
-                # Sample noise and time
-                x_1 = torch.randn_like(x_0)
+                z = torch.randn_like(x_1)
                 t = torch.rand(bs, device=self.device)
-
-                # Linear interpolation: x_t = (1-t)*x_0 + t*x_1
                 t_expand = t[:, None]
-                x_t = (1 - t_expand) * x_0 + t_expand * x_1
-
-                # Target velocity: v = x_1 - x_0
-                v_target = x_1 - x_0
+                x_t = (1 - t_expand) * z + t_expand * x_1
+                v_target = x_1 - z
 
                 optimizer.zero_grad()
                 v_pred = self.model(x_t, t)
@@ -68,21 +54,13 @@ class RectifiedFlowDiffusion:
                 epoch_loss += loss.item()
                 n_batches += 1
 
+            scheduler.step()
             losses.append(epoch_loss / n_batches)
 
         return losses
 
     @torch.no_grad()
     def generate(self, n_samples, n_steps=100):
-        """Generate samples via Euler ODE integration from t=0 to t=1.
-
-        Args:
-            n_samples: number of points to generate
-            n_steps: number of Euler steps
-
-        Returns:
-            list of (n_samples, 2) numpy arrays (trajectory snapshots)
-        """
         self.model.eval()
         dt = 1.0 / n_steps
         x = torch.randn(n_samples, 2, device=self.device)

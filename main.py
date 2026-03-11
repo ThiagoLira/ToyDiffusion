@@ -27,6 +27,16 @@ VARIANT_DISPLAY = {
     "ot_cfm": "OT-CFM (Tong et al., 2023)",
 }
 
+# Default epochs per variant (tuned for convergence on Homer data)
+VARIANT_EPOCHS = {
+    "ddpm": 5000,
+    "ddim": 5000,
+    "score_sde": 5000,
+    "edm": 5000,
+    "rectified_flow": 5000,
+    "ot_cfm": 3000,
+}
+
 
 def run_variant(name, cls, data, device, epochs, output_dir):
     """Train and generate for a single variant, save GIF."""
@@ -74,7 +84,7 @@ def run_variant(name, cls, data, device, epochs, output_dir):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DiffusionGenealogy: 6 Diffusion Variants on Homer Simpson")
     parser.add_argument("variants", nargs="*", help="Variant names to run (default: all)")
-    parser.add_argument("--epochs", type=int, default=100, help="Training epochs (default: 100)")
+    parser.add_argument("--epochs", type=int, default=None, help="Training epochs (overrides per-variant defaults)")
     parser.add_argument("--device", type=str, default=None, help="Device (default: auto)")
     parser.add_argument("--homer", type=str, default=None, help="Path to homer.png")
     parser.add_argument("--output-dir", type=str, default="outputs", help="Output directory")
@@ -116,7 +126,8 @@ if __name__ == "__main__":
 
     for name in selected:
         cls = VARIANTS[name]
-        result = run_variant(name, cls, data, device, args.epochs, output_dir)
+        epochs = args.epochs if args.epochs is not None else VARIANT_EPOCHS.get(name, 5000)
+        result = run_variant(name, cls, data, device, epochs, output_dir)
         results.append(result)
 
     # Summary

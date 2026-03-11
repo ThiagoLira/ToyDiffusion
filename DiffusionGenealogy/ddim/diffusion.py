@@ -35,6 +35,7 @@ class DDIMDiffusion:
         data = data.to(self.device)
         N = data.shape[0]
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr * 0.01)
         criterion = nn.MSELoss()
         losses = []
 
@@ -65,16 +66,14 @@ class DDIMDiffusion:
                 epoch_loss += loss.item()
                 n_batches += 1
 
+            scheduler.step()
             losses.append(epoch_loss / n_batches)
 
         return losses
 
     @torch.no_grad()
     def generate(self, n_samples, n_steps=50):
-        """DDIM deterministic sampling (eta=0).
-
-        Uses a subsequence of timesteps for accelerated sampling.
-        """
+        """DDIM deterministic sampling (eta=0)."""
         self.model.eval()
         timesteps = make_ddim_timesteps(self.T, n_steps)
         x = torch.randn(n_samples, 2, device=self.device)
@@ -100,9 +99,7 @@ class DDIMDiffusion:
                 (1.0 - abar_prev) / (1.0 - abar_t) * (1.0 - abar_t / abar_prev)
             )
 
-            # Direction pointing to x_t
             dir_xt = torch.sqrt(1.0 - abar_prev - sigma**2) * eps_pred
-
             x = torch.sqrt(abar_prev) * x0_pred + dir_xt
 
             if self.eta > 0 and i > 0:
