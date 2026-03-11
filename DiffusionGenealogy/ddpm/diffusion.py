@@ -1,0 +1,108 @@
+import torch
+import torch.nn as nn
+import numpy as np
+from tqdm import tqdm
+
+from ..shared.model import TimeConditionedMLP
+from .utils import linear_beta_schedule
+
+
+class DDPMDiffusion:
+    """DDPM: Epsilon-prediction with stochastic reverse sampling.
+
+    Train: t~U{0,T-1}, eps~N(0,I), x_t = sqrt(abar_t)*x_0 + sqrt(1-abar_t)*eps,
+           loss = MSE(eps, model(x_t, t/T))
+    Sample: Reverse t=T-1..0, predict eps, compute mu, add noise (except t=0).
+    """
+
+    def __init__(self, model=None, device="cpu", hidden_dim=256, time_emb_dim=64,
+                 T=300, beta_start=1e-4, beta_end=0.02):
+        self.device = device
+        self.T = T
+        if model is None:
+            self.model = TimeConditionedMLP(hidden_dim, time_emb_dim).to(device)
+        else:
+            self.model = model.to(device)
+
+        betas, alphas, alpha_bars = linear_beta_schedule(T, beta_start, beta_end)
+        self.betas = betas.to(device)
+        self.alphas = alphas.to(device)
+        self.alpha_bars = alpha_bars.to(device)
+
+    def train(self, data, epochs=100, batch_size=512, lr=1e-3):
+        data = data.to(self.device)
+        N = data.shape[0]
+        optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        criterion = nn.MSELoss()
+        losses = []
+
+        for epoch in tqdm(range(epochs), desc="DDPM"):
+            epoch_loss = 0.0
+            n_batches = 0
+
+            perm = torch.randperm(N, device=self.device)
+            for start in range(0, N, batch_size):
+                idx = perm[start : start + batch_size]
+                x_0 = data[idx]
+                bs = x_0.shape[0]
+
+                # Sample random timesteps t in {0, ..., T-1}
+                t_int = torch.randint(0, self.T, (bs,), device=self.device)
+                eps = torch.randn_like(x_0)
+
+                # Forward process: x_t = sqrt(abar_t)*x_0 + sqrt(1-abar_t)*eps
+                abar = self.alpha_bars[t_int][:, None]
+                x_t = torch.sqrt(abar) * x_0 + torch.sqrt(1.0 - abar) * eps
+
+                # Normalize t to [0, 1] for continuous time embedding
+                t_norm = t_int.float() / self.T
+
+                optimizer.zero_grad()
+                eps_pred = self.model(x_t, t_norm)
+                loss = criterion(eps_pred, eps)
+                loss.backward()
+                optimizer.step()
+
+                epoch_loss += loss.item()
+                n_batches += 1
+
+            losses.append(epoch_loss / n_batches)
+
+        return losses
+
+    @torch.no_grad()
+    def generate(self, n_samples, n_steps=None):
+        """Reverse diffusion sampling from t=T-1 down to 0.
+
+        n_steps is ignored (always uses T steps for DDPM).
+        """
+        self.model.eval()
+        x = torch.randn(n_samples, 2, device=self.device)
+        trajectory = [x.cpu().numpy()]
+
+        for t in range(self.T - 1, -1, -1):
+            t_batch = torch.full((n_samples,), t, device=self.device)
+            t_norm = t_batch.float() / self.T
+
+            eps_pred = self.model(x, t_norm)
+
+            alpha_t = self.alphas[t]
+            abar_t = self.alpha_bars[t]
+            beta_t = self.betas[t]
+
+            # Predicted mean: mu = (1/sqrt(alpha_t)) * (x_t - beta_t/sqrt(1-abar_t) * eps_pred)
+            mu = (1.0 / torch.sqrt(alpha_t)) * (
+                x - (beta_t / torch.sqrt(1.0 - abar_t)) * eps_pred
+            )
+
+            if t > 0:
+                noise = torch.randn_like(x)
+                sigma = torch.sqrt(beta_t)
+                x = mu + sigma * noise
+            else:
+                x = mu
+
+            trajectory.append(x.cpu().numpy())
+
+        self.model.train()
+        return trajectory

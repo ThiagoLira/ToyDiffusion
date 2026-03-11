@@ -1,9 +1,15 @@
 [project]
 name = "toydiffusion"
 version = "0.1.0"
-description = "Add your description here"
+description = "A showcase of 6 generative frameworks (DDPM, DDIM, Score-SDE, EDM, Rectified Flow, OT-CFM) on a Homer Simpson scatterplot"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "Pillow>=10.0",
+    "scipy>=1.11",
+    "tqdm>=4.65",
     "marimo>=0.20.2",
 ]
