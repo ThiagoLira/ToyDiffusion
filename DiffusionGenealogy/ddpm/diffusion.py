@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 
-from ..shared.model import TimeConditionedMLP
+from ..shared.model import TimeConditionedMLP, EMA
 from .utils import linear_beta_schedule
 
 
@@ -35,6 +35,7 @@ class DDPMDiffusion:
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr * 0.01)
         criterion = nn.MSELoss()
+        self.ema = EMA(self.model)
         losses = []
 
         for epoch in tqdm(range(epochs), desc="DDPM"):
@@ -53,14 +54,15 @@ class DDPMDiffusion:
                 abar = self.alpha_bars[t_int][:, None]
                 x_t = torch.sqrt(abar) * x_0 + torch.sqrt(1.0 - abar) * eps
 
-                # Normalize t to [0, 1] for time embedding
                 t_norm = t_int.float() / self.T
 
                 optimizer.zero_grad()
                 eps_pred = self.model(x_t, t_norm)
                 loss = criterion(eps_pred, eps)
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 optimizer.step()
+                self.ema.update(self.model)
 
                 epoch_loss += loss.item()
                 n_batches += 1
@@ -74,6 +76,9 @@ class DDPMDiffusion:
     def generate(self, n_samples, n_steps=None):
         """Reverse diffusion sampling from t=T-1 down to 0."""
         self.model.eval()
+        if hasattr(self, 'ema'):
+            self.ema.apply(self.model)
+
         x = torch.randn(n_samples, 2, device=self.device)
         trajectory = [x.cpu().numpy()]
 
@@ -100,5 +105,7 @@ class DDPMDiffusion:
 
             trajectory.append(x.cpu().numpy())
 
+        if hasattr(self, 'ema'):
+            self.ema.restore(self.model)
         self.model.train()
         return trajectory

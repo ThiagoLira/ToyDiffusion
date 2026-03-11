@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 
-from ..shared.model import TimeConditionedMLP
+from ..shared.model import TimeConditionedMLP, EMA
 from .utils import compute_ot_plan
 
 
@@ -15,7 +15,7 @@ class OTCFMDiffusion:
 
     Convention: t=0 is noise (source), t=1 is data (target).
     Train: t~U[0,1], OT-couple (z, x_1), x_t = (1-t)*z + t*x_1, v = x_1 - z
-    Sample: Euler ODE dx = v*dt from t=0 -> 1, 100 steps
+    Sample: Midpoint ODE dx = v*dt from t=0 -> 1, 200 steps
     """
 
     def __init__(self, model=None, device="cpu", hidden_dim=256, time_emb_dim=64):
@@ -31,6 +31,7 @@ class OTCFMDiffusion:
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr * 0.01)
         criterion = nn.MSELoss()
+        self.ema = EMA(self.model)
         losses = []
 
         for epoch in tqdm(range(epochs), desc="OT-CFM"):
@@ -40,12 +41,11 @@ class OTCFMDiffusion:
             perm = torch.randperm(N, device=self.device)
             for start in range(0, N, batch_size):
                 idx = perm[start : start + batch_size]
-                x_1 = data[idx]  # target data (t=1)
+                x_1 = data[idx]
                 bs = x_1.shape[0]
 
                 z = torch.randn(bs, 2, device=self.device)
 
-                # OT coupling: reorder noise to match data
                 x_1_np = x_1.cpu().numpy()
                 z_np = z.cpu().numpy()
                 ot_perm = compute_ot_plan(x_1_np, z_np)
@@ -60,7 +60,9 @@ class OTCFMDiffusion:
                 v_pred = self.model(x_t, t)
                 loss = criterion(v_pred, v_target)
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 optimizer.step()
+                self.ema.update(self.model)
 
                 epoch_loss += loss.item()
                 n_batches += 1
@@ -71,17 +73,30 @@ class OTCFMDiffusion:
         return losses
 
     @torch.no_grad()
-    def generate(self, n_samples, n_steps=100):
+    def generate(self, n_samples, n_steps=200):
+        """Midpoint method ODE integration from t=0 to t=1."""
         self.model.eval()
+        if hasattr(self, 'ema'):
+            self.ema.apply(self.model)
+
         dt = 1.0 / n_steps
         x = torch.randn(n_samples, 2, device=self.device)
         trajectory = [x.cpu().numpy()]
 
         for step in range(n_steps):
-            t = torch.full((n_samples,), step * dt, device=self.device)
-            v = self.model(x, t)
-            x = x + v * dt
+            t = step * dt
+            t_batch = torch.full((n_samples,), t, device=self.device)
+            v = self.model(x, t_batch)
+
+            # Midpoint method (2nd-order)
+            t_mid = torch.full((n_samples,), t + 0.5 * dt, device=self.device)
+            x_mid = x + 0.5 * dt * v
+            v_mid = self.model(x_mid, t_mid)
+            x = x + v_mid * dt
+
             trajectory.append(x.cpu().numpy())
 
+        if hasattr(self, 'ema'):
+            self.ema.restore(self.model)
         self.model.train()
         return trajectory

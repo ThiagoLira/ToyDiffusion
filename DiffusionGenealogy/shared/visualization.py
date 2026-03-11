@@ -32,7 +32,7 @@ def create_trajectory_gif(
     title="Diffusion",
     fps=24,
     max_frames=60,
-    point_size=1.5,
+    point_size=2.5,
 ):
     """Create a GIF showing the generative trajectory with colored points.
 
@@ -57,7 +57,7 @@ def create_trajectory_gif(
 
     frames = [trajectories[i] for i in indices]
 
-    fig, ax = plt.subplots(figsize=(6, 6), dpi=100)
+    fig, ax = plt.subplots(figsize=(6, 6), dpi=150)
     ax.set_xlim(axes["xlim"])
     ax.set_ylim(axes["ylim"])
     ax.set_aspect("equal")

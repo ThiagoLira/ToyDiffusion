@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 
-from ..shared.model import TimeConditionedMLP
+from ..shared.model import TimeConditionedMLP, EMA
 from .utils import karras_sigma_schedule, edm_precond, edm_loss_weight
 
 
@@ -15,13 +15,13 @@ class EDMDiffusion:
 
     Train: sigma~LogNormal(P_mean, P_std), x_noisy = x_0 + sigma*eps,
            loss = weight(sigma) * ||D_theta(x_noisy;sigma) - x_0||^2
-    Sample: Heun 2nd-order on Karras sigma schedule, 40 steps.
+    Sample: Heun 2nd-order on Karras sigma schedule, 80 steps.
     """
 
     def __init__(self, model=None, device="cpu", hidden_dim=256, time_emb_dim=64,
                  sigma_data=None, P_mean=-1.2, P_std=1.2):
         self.device = device
-        self.sigma_data = sigma_data  # computed from data if None
+        self.sigma_data = sigma_data
         self.P_mean = P_mean
         self.P_std = P_std
         if model is None:
@@ -48,6 +48,7 @@ class EDMDiffusion:
 
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr * 0.01)
+        self.ema = EMA(self.model)
         losses = []
 
         for epoch in tqdm(range(epochs), desc="EDM"):
@@ -73,7 +74,9 @@ class EDMDiffusion:
 
                 optimizer.zero_grad()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 optimizer.step()
+                self.ema.update(self.model)
 
                 epoch_loss += loss.item()
                 n_batches += 1
@@ -84,9 +87,12 @@ class EDMDiffusion:
         return losses
 
     @torch.no_grad()
-    def generate(self, n_samples, n_steps=40):
+    def generate(self, n_samples, n_steps=80):
         """Heun's 2nd-order method on Karras sigma schedule."""
         self.model.eval()
+        if hasattr(self, 'ema'):
+            self.ema.apply(self.model)
+
         sigmas = karras_sigma_schedule(n_steps).to(self.device)
 
         x = torch.randn(n_samples, 2, device=self.device) * sigmas[0]
@@ -114,5 +120,7 @@ class EDMDiffusion:
             x = x_next
             trajectory.append(x.cpu().numpy())
 
+        if hasattr(self, 'ema'):
+            self.ema.restore(self.model)
         self.model.train()
         return trajectory

@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 
-from ..shared.model import TimeConditionedMLP
+from ..shared.model import TimeConditionedMLP, EMA
 from .utils import marginal_prob_params, sde_drift_diffusion
 
 
@@ -31,6 +31,7 @@ class ScoreSDEDiffusion:
         N = data.shape[0]
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr * 0.01)
+        self.ema = EMA(self.model)
         losses = []
 
         for epoch in tqdm(range(epochs), desc="Score-SDE"):
@@ -49,17 +50,17 @@ class ScoreSDEDiffusion:
                 alpha, sigma = marginal_prob_params(t, self.beta_min, self.beta_max)
                 x_t = alpha[:, None] * x_0 + sigma[:, None] * eps
 
-                # Target score: nabla_x log q(x_t|x_0) = -eps / sigma(t)
                 target_score = -eps / sigma[:, None]
 
                 optimizer.zero_grad()
                 score_pred = self.model(x_t, t)
 
-                # Weighted loss: sigma^2 * ||score_pred - target||^2
                 weight = sigma[:, None] ** 2
                 loss = (weight * (score_pred - target_score) ** 2).mean()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 optimizer.step()
+                self.ema.update(self.model)
 
                 epoch_loss += loss.item()
                 n_batches += 1
@@ -73,6 +74,9 @@ class ScoreSDEDiffusion:
     def generate(self, n_samples, n_steps=500):
         """PF-ODE sampling: dx = [f(t)*x - 0.5*g(t)^2 * score] dt from t=1 to eps."""
         self.model.eval()
+        if hasattr(self, 'ema'):
+            self.ema.apply(self.model)
+
         dt = -(1.0 - self.eps) / n_steps
         x = torch.randn(n_samples, 2, device=self.device)
         trajectory = [x.cpu().numpy()]
@@ -90,5 +94,7 @@ class ScoreSDEDiffusion:
             t_current += dt
             trajectory.append(x.cpu().numpy())
 
+        if hasattr(self, 'ema'):
+            self.ema.restore(self.model)
         self.model.train()
         return trajectory

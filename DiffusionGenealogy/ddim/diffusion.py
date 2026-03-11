@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 
-from ..shared.model import TimeConditionedMLP
+from ..shared.model import TimeConditionedMLP, EMA
 from ..ddpm.utils import linear_beta_schedule
 from .utils import make_ddim_timesteps
 
@@ -12,7 +12,7 @@ class DDIMDiffusion:
     """DDIM: Same training as DDPM, deterministic sampling with eta=0.
 
     Train: Identical to DDPM (epsilon-prediction).
-    Sample: DDIM update rule (Eq.12 from Song et al. 2020), 50 steps.
+    Sample: DDIM update rule (Eq.12 from Song et al. 2020), 100 steps.
     """
 
     def __init__(self, model=None, device="cpu", hidden_dim=256, time_emb_dim=64,
@@ -37,6 +37,7 @@ class DDIMDiffusion:
         optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=lr * 0.01)
         criterion = nn.MSELoss()
+        self.ema = EMA(self.model)
         losses = []
 
         for epoch in tqdm(range(epochs), desc="DDIM"):
@@ -61,7 +62,9 @@ class DDIMDiffusion:
                 eps_pred = self.model(x_t, t_norm)
                 loss = criterion(eps_pred, eps)
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 optimizer.step()
+                self.ema.update(self.model)
 
                 epoch_loss += loss.item()
                 n_batches += 1
@@ -72,9 +75,12 @@ class DDIMDiffusion:
         return losses
 
     @torch.no_grad()
-    def generate(self, n_samples, n_steps=50):
+    def generate(self, n_samples, n_steps=100):
         """DDIM deterministic sampling (eta=0)."""
         self.model.eval()
+        if hasattr(self, 'ema'):
+            self.ema.apply(self.model)
+
         timesteps = make_ddim_timesteps(self.T, n_steps)
         x = torch.randn(n_samples, 2, device=self.device)
         trajectory = [x.cpu().numpy()]
@@ -91,10 +97,8 @@ class DDIMDiffusion:
             abar_t = self.alpha_bars[t]
             abar_prev = self.alpha_bars[t_prev] if i > 0 else torch.tensor(1.0, device=self.device)
 
-            # Predict x_0 from eps
             x0_pred = (x - torch.sqrt(1.0 - abar_t) * eps_pred) / torch.sqrt(abar_t)
 
-            # DDIM deterministic update (eta=0)
             sigma = self.eta * torch.sqrt(
                 (1.0 - abar_prev) / (1.0 - abar_t) * (1.0 - abar_t / abar_prev)
             )
@@ -107,5 +111,7 @@ class DDIMDiffusion:
 
             trajectory.append(x.cpu().numpy())
 
+        if hasattr(self, 'ema'):
+            self.ema.restore(self.model)
         self.model.train()
         return trajectory
