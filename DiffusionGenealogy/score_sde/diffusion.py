@@ -15,7 +15,7 @@ class ScoreSDEDiffusion:
     Sample: PF-ODE: dx = [f(t)*x - 0.5*g(t)^2 * score] dt, Euler from t=1 -> eps.
     """
 
-    def __init__(self, model=None, device="cpu", hidden_dim=256, time_emb_dim=64,
+    def __init__(self, model=None, device="cpu", hidden_dim=512, time_emb_dim=128,
                  beta_min=0.1, beta_max=20.0):
         self.device = device
         self.beta_min = beta_min
@@ -71,7 +71,7 @@ class ScoreSDEDiffusion:
         return losses
 
     @torch.no_grad()
-    def generate(self, n_samples, n_steps=500):
+    def generate(self, n_samples, n_steps=1000):
         """PF-ODE sampling: dx = [f(t)*x - 0.5*g(t)^2 * score] dt from t=1 to eps."""
         self.model.eval()
         if hasattr(self, 'ema'):

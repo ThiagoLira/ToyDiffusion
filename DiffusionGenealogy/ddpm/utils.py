@@ -5,7 +5,7 @@ import numpy as np
 def linear_beta_schedule(T, beta_start=1e-4, beta_end=0.02):
     """Linear variance schedule from beta_start to beta_end over T timesteps.
 
-    Uses sqrt-linear interpolation (same as original notebook) for smoother schedule.
+    Uses sqrt-linear interpolation for smoother schedule.
 
     Returns:
         betas: (T,) tensor
@@ -13,6 +13,23 @@ def linear_beta_schedule(T, beta_start=1e-4, beta_end=0.02):
         alpha_bars: (T,) tensor of cumulative products of alphas
     """
     betas = np.linspace(beta_start ** 0.5, beta_end ** 0.5, T) ** 2
+    betas = torch.tensor(betas, dtype=torch.float32)
+    alphas = 1.0 - betas
+    alpha_bars = torch.cumprod(alphas, dim=0)
+    return betas, alphas, alpha_bars
+
+
+def cosine_beta_schedule(T, s=0.008):
+    """Cosine variance schedule from 'Improved DDPM' (Nichol & Dhariwal, 2021).
+
+    Produces alpha_bar_t = cos((t/T + s)/(1+s) * pi/2)^2
+    which gives smoother noise transitions and better fine-detail preservation.
+    """
+    steps = np.arange(T + 1, dtype=np.float64)
+    f = np.cos((steps / T + s) / (1 + s) * np.pi / 2) ** 2
+    alpha_bars = f / f[0]
+    # Clip betas to avoid singularities
+    betas = np.clip(1 - alpha_bars[1:] / alpha_bars[:-1], 0, 0.999)
     betas = torch.tensor(betas, dtype=torch.float32)
     alphas = 1.0 - betas
     alpha_bars = torch.cumprod(alphas, dim=0)

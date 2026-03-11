@@ -4,19 +4,20 @@ import numpy as np
 from tqdm import tqdm
 
 from ..shared.model import TimeConditionedMLP, EMA
-from .utils import linear_beta_schedule
+from .utils import cosine_beta_schedule
 
 
 class DDPMDiffusion:
     """DDPM: Epsilon-prediction with stochastic reverse sampling.
 
+    Uses cosine beta schedule (Improved DDPM) for better fine detail.
     Train: t~U{0,T-1}, eps~N(0,I), x_t = sqrt(abar_t)*x_0 + sqrt(1-abar_t)*eps,
            loss = MSE(eps, model(x_t, t/T))
     Sample: Reverse t=T-1..0, predict eps, compute mu, add noise (except t=0).
     """
 
-    def __init__(self, model=None, device="cpu", hidden_dim=256, time_emb_dim=64,
-                 T=300, beta_start=1e-4, beta_end=0.02):
+    def __init__(self, model=None, device="cpu", hidden_dim=512, time_emb_dim=128,
+                 T=1000):
         self.device = device
         self.T = T
         if model is None:
@@ -24,7 +25,7 @@ class DDPMDiffusion:
         else:
             self.model = model.to(device)
 
-        betas, alphas, alpha_bars = linear_beta_schedule(T, beta_start, beta_end)
+        betas, alphas, alpha_bars = cosine_beta_schedule(T)
         self.betas = betas.to(device)
         self.alphas = alphas.to(device)
         self.alpha_bars = alpha_bars.to(device)

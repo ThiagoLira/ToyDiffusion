@@ -14,7 +14,7 @@ class RectifiedFlowDiffusion:
     Sample: Midpoint ODE dx = v*dt from t=0 -> 1, 200 steps
     """
 
-    def __init__(self, model=None, device="cpu", hidden_dim=256, time_emb_dim=64):
+    def __init__(self, model=None, device="cpu", hidden_dim=512, time_emb_dim=128):
         self.device = device
         if model is None:
             self.model = TimeConditionedMLP(hidden_dim, time_emb_dim).to(device)

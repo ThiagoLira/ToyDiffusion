@@ -4,19 +4,20 @@ import numpy as np
 from tqdm import tqdm
 
 from ..shared.model import TimeConditionedMLP, EMA
-from ..ddpm.utils import linear_beta_schedule
+from ..ddpm.utils import cosine_beta_schedule
 from .utils import make_ddim_timesteps
 
 
 class DDIMDiffusion:
     """DDIM: Same training as DDPM, deterministic sampling with eta=0.
 
+    Uses cosine beta schedule for better fine detail.
     Train: Identical to DDPM (epsilon-prediction).
     Sample: DDIM update rule (Eq.12 from Song et al. 2020), 100 steps.
     """
 
-    def __init__(self, model=None, device="cpu", hidden_dim=256, time_emb_dim=64,
-                 T=300, beta_start=1e-4, beta_end=0.02, eta=0.0):
+    def __init__(self, model=None, device="cpu", hidden_dim=512, time_emb_dim=128,
+                 T=1000, eta=0.0):
         self.device = device
         self.T = T
         self.eta = eta
@@ -25,7 +26,7 @@ class DDIMDiffusion:
         else:
             self.model = model.to(device)
 
-        betas, alphas, alpha_bars = linear_beta_schedule(T, beta_start, beta_end)
+        betas, alphas, alpha_bars = cosine_beta_schedule(T)
         self.betas = betas.to(device)
         self.alphas = alphas.to(device)
         self.alpha_bars = alpha_bars.to(device)

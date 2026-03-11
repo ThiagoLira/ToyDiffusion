@@ -18,7 +18,7 @@ class EDMDiffusion:
     Sample: Heun 2nd-order on Karras sigma schedule, 80 steps.
     """
 
-    def __init__(self, model=None, device="cpu", hidden_dim=256, time_emb_dim=64,
+    def __init__(self, model=None, device="cpu", hidden_dim=512, time_emb_dim=128,
                  sigma_data=None, P_mean=-1.2, P_std=1.2):
         self.device = device
         self.sigma_data = sigma_data

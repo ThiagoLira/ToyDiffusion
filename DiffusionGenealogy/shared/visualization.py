@@ -1,7 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation, PillowWriter
+from PIL import Image as PILImage
 from pathlib import Path
+import io
 
 
 def assign_colors(positions):
@@ -17,11 +18,34 @@ def assign_colors(positions):
     dx = positions[:, 0] - centroid[0]
     dy = positions[:, 1] - centroid[1]
     angles = np.arctan2(dy, dx)
-    # Normalize to [0, 1]
     hue = (angles + np.pi) / (2 * np.pi)
     cmap = plt.cm.hsv
     colors = cmap(hue)
     return colors
+
+
+def _render_frame(pts, colors, axes, title, point_size, dpi, figsize):
+    """Render a single frame to a PIL Image."""
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    ax.set_xlim(axes["xlim"])
+    ax.set_ylim(axes["ylim"])
+    ax.set_aspect("equal")
+    ax.set_facecolor("black")
+    fig.patch.set_facecolor("black")
+    ax.set_title(title, color="white", fontsize=14, fontweight="bold", pad=10)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_color("#333333")
+        spine.set_linewidth(0.5)
+
+    ax.scatter(pts[:, 0], pts[:, 1], s=point_size, c=colors, marker=".")
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", facecolor="black", bbox_inches="tight", pad_inches=0.3)
+    plt.close(fig)
+    buf.seek(0)
+    return PILImage.open(buf).convert("RGB")
 
 
 def create_trajectory_gif(
@@ -32,19 +56,13 @@ def create_trajectory_gif(
     title="Diffusion",
     fps=24,
     max_frames=60,
-    point_size=2.5,
+    point_size=3.0,
+    hold_last_frames=36,
 ):
     """Create a GIF showing the generative trajectory with colored points.
 
-    Args:
-        trajectories: list of (N, 2) numpy arrays (from noise to data)
-        colors: (N, 4) RGBA color array for each point
-        path: output path for the GIF
-        axes: dict with 'xlim' and 'ylim'
-        title: title shown on the GIF
-        fps: frames per second
-        max_frames: subsample to at most this many frames
-        point_size: matplotlib scatter point size
+    The last frame is held for `hold_last_frames` extra frames (~1.5s at 24fps)
+    so the final result is clearly visible.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,35 +73,23 @@ def create_trajectory_gif(
     else:
         indices = np.linspace(0, n_total - 1, max_frames, dtype=int).tolist()
 
-    frames = [trajectories[i] for i in indices]
+    frame_duration_ms = int(1000 / fps)
+    pil_frames = []
 
-    fig, ax = plt.subplots(figsize=(6, 6), dpi=150)
-    ax.set_xlim(axes["xlim"])
-    ax.set_ylim(axes["ylim"])
-    ax.set_aspect("equal")
-    ax.set_facecolor("black")
-    fig.patch.set_facecolor("black")
-    ax.set_title(title, color="white", fontsize=14, fontweight="bold")
-    ax.tick_params(colors="white")
-    for spine in ax.spines.values():
-        spine.set_color("white")
+    for frame_idx, step_idx in enumerate(indices):
+        pts = trajectories[step_idx]
+        frame_title = f"{title}  (step {step_idx}/{n_total - 1})"
+        img = _render_frame(pts, colors, axes, frame_title, point_size, dpi=150, figsize=(6, 6))
+        pil_frames.append(img)
 
-    scatter = ax.scatter([], [], s=point_size, c=[], marker=".")
+    # Build durations: normal for all frames, long hold on the last one
+    durations = [frame_duration_ms] * len(pil_frames)
+    durations[-1] = frame_duration_ms * hold_last_frames
 
-    def init():
-        scatter.set_offsets(np.empty((0, 2)))
-        return (scatter,)
-
-    def update(frame_idx):
-        pts = frames[frame_idx]
-        scatter.set_offsets(pts)
-        scatter.set_color(colors)
-        step = indices[frame_idx]
-        ax.set_title(f"{title}  (step {step}/{n_total - 1})", color="white",
-                      fontsize=14, fontweight="bold")
-        return (scatter,)
-
-    anim = FuncAnimation(fig, update, init_func=init,
-                         frames=len(frames), blit=True)
-    anim.save(str(path), writer=PillowWriter(fps=fps))
-    plt.close(fig)
+    pil_frames[0].save(
+        str(path),
+        save_all=True,
+        append_images=pil_frames[1:],
+        duration=durations,
+        loop=0,
+    )

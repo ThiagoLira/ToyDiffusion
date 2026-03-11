@@ -3,7 +3,7 @@ import numpy as np
 from PIL import Image
 from pathlib import Path
 
-IMG_SIZE = 150
+IMG_SIZE = 250
 
 
 def load_homer_data(img_path=None):

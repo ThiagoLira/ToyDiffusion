@@ -27,14 +27,14 @@ VARIANT_DISPLAY = {
     "ot_cfm": "OT-CFM (Tong et al., 2023)",
 }
 
-# Default epochs per variant (tuned for convergence on Homer data)
+# Default epochs per variant (tuned for high-quality Homer output)
 VARIANT_EPOCHS = {
-    "ddpm": 5000,
-    "ddim": 5000,
-    "score_sde": 5000,
-    "edm": 5000,
-    "rectified_flow": 5000,
-    "ot_cfm": 3000,
+    "ddpm": 10000,
+    "ddim": 10000,
+    "score_sde": 10000,
+    "edm": 10000,
+    "rectified_flow": 10000,
+    "ot_cfm": 5000,
 }
 
 
